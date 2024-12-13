@@ -67,6 +67,8 @@ from xdsl.irdl.declarative_assembly_format import (
     TypeableDirective,
     TypeDirective,
     VariadicLikeFormatDirective,
+    VariadicLikeTypeableDirective,
+    VariadicLikeTypeDirective,
     VariadicOperandDirective,
     VariadicOperandVariable,
     VariadicRegionDirective,
@@ -193,7 +195,7 @@ class FormatParser(BaseParser):
                     self.raise_error(
                         "A variadic directive cannot be followed by a comma literal."
                     )
-                case VariadicTypeDirective(), VariadicTypeDirective():
+                case VariadicLikeTypeDirective(), VariadicLikeTypeDirective():
                     self.raise_error(
                         "A variadic type directive cannot be followed by another variadic type directive."
                     )
@@ -621,6 +623,8 @@ class FormatParser(BaseParser):
         self.parse_punctuation(")")
         if isinstance(inner, VariadicTypeableDirective):
             return VariadicTypeDirective(inner)
+        if isinstance(inner, VariadicLikeTypeableDirective):
+            return VariadicLikeTypeDirective(inner)
         return TypeDirective(inner)
 
     def parse_functional_type_directive(self) -> FormatDirective:
