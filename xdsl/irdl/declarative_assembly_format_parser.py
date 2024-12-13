@@ -63,9 +63,13 @@ from xdsl.irdl.declarative_assembly_format import (
     RegionVariable,
     ResultsDirective,
     ResultVariable,
+    SizableDirective,
+    StaticDirective,
     SuccessorVariable,
     TypeableDirective,
     TypeDirective,
+    VariadicFormatDirective,
+    VariadicGroupDirective,
     VariadicLikeFormatDirective,
     VariadicLikeTypeableDirective,
     VariadicLikeTypeDirective,
@@ -640,7 +644,7 @@ class FormatParser(BaseParser):
         self.parse_punctuation(")")
         return FunctionalTypeDirective(operands, results)
 
-    def parse_optional_group(self) -> FormatDirective:
+    def parse_optional_or_variadic_group(self) -> FormatDirective:
         """
         Parse an optional group, with the following format:
           group ::= `(` then-elements `)` `?`
@@ -652,9 +656,13 @@ class FormatParser(BaseParser):
             then_elements += (self.parse_format_directive(),)
             if self.parse_optional_keyword("^"):
                 if anchor is not None:
-                    self.raise_error("An optional group can only have one anchor.")
+                    self.raise_error(
+                        "An optional/variadic group can only have one anchor."
+                    )
                 anchor = then_elements[-1]
-        self.parse_punctuation("?")
+        variadic = self.parse_optional_punctuation("?") is None
+        if variadic:
+            self.parse_punctuation("*")
 
         # Pull whitespace element of front, as they are not parsed
         first_non_whitespace_index = None
@@ -664,32 +672,61 @@ class FormatParser(BaseParser):
                 break
 
         if first_non_whitespace_index is None:
-            self.raise_error("An optional group must have a non-whitespace directive")
+            self.raise_error(
+                f"{'A variadic' if variadic else 'An optional'} group must have a non-whitespace directive"
+            )
         if anchor is None:
-            self.raise_error("Every optional group must have an anchor.")
-        # TODO: allow attribute and region variables when implemented.
-        if not isinstance(
-            then_elements[first_non_whitespace_index], OptionallyParsableDirective
-        ):
             self.raise_error(
-                "First element of an optional group must be optionally parsable."
+                f"Every {'variadic' if variadic else 'optional'} group must have an anchor."
             )
-        if not isinstance(anchor, AnchorableDirective):
-            self.raise_error(
-                "An optional group's anchor must be an anchorable directive."
-            )
+        if variadic:
+            for element in then_elements[first_non_whitespace_index:]:
+                if not isinstance(
+                    element, StaticDirective | VariadicLikeFormatDirective
+                ):
+                    self.raise_error(
+                        "Elements of a variadic group must be static or variadic."
+                    )
+            if not isinstance(anchor, SizableDirective):
+                self.raise_error(
+                    "A variadic group's anchor must be an sizable directive."
+                )
 
-        return OptionalGroupDirective(
-            anchor,
-            cast(
-                tuple[WhitespaceDirective, ...],
-                then_elements[:first_non_whitespace_index],
-            ),
-            cast(
-                OptionallyParsableDirective, then_elements[first_non_whitespace_index]
-            ),
-            then_elements[first_non_whitespace_index + 1 :],
-        )
+            return VariadicGroupDirective(
+                anchor,
+                cast(
+                    tuple[WhitespaceDirective, ...],
+                    then_elements[:first_non_whitespace_index],
+                ),
+                cast(
+                    tuple[StaticDirective | VariadicFormatDirective, ...],
+                    then_elements[first_non_whitespace_index:],
+                ),
+            )
+        else:
+            if not isinstance(
+                then_elements[first_non_whitespace_index], OptionallyParsableDirective
+            ):
+                self.raise_error(
+                    "First element of an optional group must be optionally parsable."
+                )
+            if not isinstance(anchor, AnchorableDirective):
+                self.raise_error(
+                    "An optional group's anchor must be an anchorable directive."
+                )
+
+            return OptionalGroupDirective(
+                anchor,
+                cast(
+                    tuple[WhitespaceDirective, ...],
+                    then_elements[:first_non_whitespace_index],
+                ),
+                cast(
+                    OptionallyParsableDirective,
+                    then_elements[first_non_whitespace_index],
+                ),
+                then_elements[first_non_whitespace_index + 1 :],
+            )
 
     def parse_keyword_or_punctuation(self) -> FormatDirective:
         """
@@ -767,7 +804,7 @@ class FormatParser(BaseParser):
         if self._current_token.text == "`":
             return self.parse_keyword_or_punctuation()
         if self.parse_optional_punctuation("("):
-            return self.parse_optional_group()
+            return self.parse_optional_or_variadic_group()
         if variable := self.parse_optional_variable():
             return variable
         self.raise_error(f"unexpected token '{self._current_token.text}'")

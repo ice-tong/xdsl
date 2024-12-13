@@ -250,6 +250,22 @@ class AnchorableDirective(Directive, ABC):
         ...
 
 
+class SizableDirective(AnchorableDirective, ABC):
+    """
+    Base class for Directive usable as anchors in variadic groups.
+    """
+
+    @abstractmethod
+    def num_elements(self, op: IRDLOperation) -> int:
+        """
+        Check how many items are present in the input.
+        """
+        ...
+
+    def is_present(self, op: IRDLOperation) -> bool:
+        return bool(self.num_elements(op))
+
+
 class FormatDirective(Directive, ABC):
     """A format directive for operation format."""
 
@@ -298,11 +314,7 @@ class VariadicLikeFormatDirective(
     def parse_optional(self, parser: Parser, state: ParsingState) -> bool: ...
 
 
-class VariadicFormatDirective(VariadicLikeFormatDirective, ABC):
-    """
-    A directive which uses a generator to parse multiple objects.
-    """
-
+class GeneratorDirective(FormatDirective, ABC):
     @abstractmethod
     def parse_generator(
         self, parser: Parser, state: ParsingState
@@ -311,6 +323,19 @@ class VariadicFormatDirective(VariadicLikeFormatDirective, ABC):
         TODO
         """
         ...
+
+    @abstractmethod
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ): ...
+
+
+class VariadicFormatDirective(
+    VariadicLikeFormatDirective, GeneratorDirective, SizableDirective, ABC
+):
+    """
+    A directive which uses a generator to parse multiple objects.
+    """
 
     def parse_optional(self, parser: Parser, state: ParsingState) -> bool:
         gen = self.parse_generator(parser, state)
@@ -323,11 +348,29 @@ class VariadicFormatDirective(VariadicLikeFormatDirective, ABC):
         gen.close()
         return True
 
+    def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
+        num_elements = self.num_elements(op)
+        if not num_elements:
+            return
+        for i in range(self.num_elements(op)):
+            if i:
+                PunctuationDirective(",").print(printer, state, op)
+            self.print_index(i, printer, state, op)
 
-class StaticDirective(OptionallyParsableDirective, ABC):
+
+class StaticDirective(OptionallyParsableDirective, GeneratorDirective, ABC):
     """
     A directive which does not modify the parsing state.
     """
+
+    def parse_generator(self, parser: Parser, state: ParsingState):
+        while self.parse_optional(parser, state):
+            yield
+
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
+        return self.print(printer, state, op)
 
 
 class TypeableDirective(Directive, ABC):
@@ -354,7 +397,7 @@ class VariadicLikeTypeableDirective(TypeableDirective, AnchorableDirective, ABC)
     def set_types_empty(self, state: ParsingState) -> None: ...
 
 
-class VariadicTypeableDirective(VariadicLikeTypeableDirective, ABC):
+class VariadicTypeableDirective(VariadicLikeTypeableDirective, SizableDirective, ABC):
     """
     A directive which uses a generator to parse multiple types.
     """
@@ -439,6 +482,18 @@ class VariadicTypeDirective(VariadicLikeTypeDirective, VariadicFormatDirective):
     ) -> Generator[None, None, None]:
         return self.inner.parse_type_generator(parser, state)
 
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
+        if state.should_emit_space or not state.last_was_punctuation:
+            printer.print(" ")
+        printer.print_attribute(self.inner.get_types(op)[idx])
+        state.last_was_punctuation = False
+        state.should_emit_space = True
+
+    def num_elements(self, op: IRDLOperation) -> int:
+        return self.inner.num_elements(op)
+
 
 @dataclass(frozen=True)
 class VariableDirective(Directive, ABC):
@@ -454,9 +509,9 @@ class VariableDirective(Directive, ABC):
     """Index of the variable(operand or result) definition."""
 
 
-class VariadicVariable(VariableDirective, AnchorableDirective, ABC):
-    def is_present(self, op: IRDLOperation) -> bool:
-        return bool(getattr(op, self.name))
+class VariadicVariable(VariableDirective, SizableDirective, ABC):
+    def num_elements(self, op: IRDLOperation) -> int:
+        return len(getattr(op, self.name))
 
 
 class OptionalVariable(VariableDirective, AnchorableDirective, ABC):
@@ -612,13 +667,12 @@ class VariadicOperandVariable(
         finally:
             state.operand_types[self.index] = types
 
-    def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
-        operand = getattr(op, self.name)
-        if not operand:
-            return
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
         if state.should_emit_space or not state.last_was_punctuation:
             printer.print(" ")
-        printer.print_list(operand, printer.print_ssa_value)
+        printer.print_ssa_value(getattr(op, self.name)[idx])
         state.last_was_punctuation = False
         state.should_emit_space = True
 
@@ -764,13 +818,14 @@ class OperandsDirective(
             ):
                 parser.raise_error(s, at_position=pos_start, end_position=parser.pos)
 
-    def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
-        if op.operands:
-            if state.should_emit_space or not state.last_was_punctuation:
-                printer.print(" ")
-            printer.print_list(op.operands, printer.print_ssa_value)
-            state.last_was_punctuation = False
-            state.should_emit_space = True
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
+        if state.should_emit_space or not state.last_was_punctuation:
+            printer.print(" ")
+        printer.print_operand(op.operands[idx])
+        state.last_was_punctuation = False
+        state.should_emit_space = True
 
     def set_types_empty(self, state: ParsingState) -> None:
         state.operand_types = [() for _ in state.operand_types]
@@ -781,8 +836,8 @@ class OperandsDirective(
     def set_empty(self, state: ParsingState):
         state.operands = [() for _ in state.operands]
 
-    def is_present(self, op: IRDLOperation) -> bool:
-        return bool(op.operands)
+    def num_elements(self, op: IRDLOperation) -> int:
+        return len(op.operands)
 
 
 @dataclass(frozen=True)
@@ -905,8 +960,8 @@ class ResultsDirective(OperandsOrResultDirective):
     def get_types(self, op: IRDLOperation) -> Sequence[Attribute]:
         return op.result_types
 
-    def is_present(self, op: IRDLOperation) -> bool:
-        return bool(op.results)
+    def num_elements(self, op: IRDLOperation) -> int:
+        return len(op.results)
 
 
 @dataclass(frozen=True)
@@ -1027,6 +1082,15 @@ class VariadicRegionVariable(
         # Regions are not separated by commas
         return bool(tuple(self.parse_generator(parser, state)))
 
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
+        if state.should_emit_space or not state.last_was_punctuation:
+            printer.print(" ")
+        printer.print_region(getattr(op, self.name)[idx])
+        state.last_was_punctuation = False
+        state.should_emit_space = True
+
     def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
         region = getattr(op, self.name)
         if not region:
@@ -1121,6 +1185,15 @@ class VariadicSuccessorVariable(
     def parse_optional(self, parser: Parser, state: ParsingState) -> bool:
         # Successors are not separated by commas
         return bool(tuple(self.parse_generator(parser, state)))
+
+    def print_index(
+        self, idx: int, printer: Printer, state: PrintingState, op: IRDLOperation
+    ):
+        if state.should_emit_space or not state.last_was_punctuation:
+            printer.print(" ")
+        printer.print_block_name(getattr(op, self.name)[idx])
+        state.last_was_punctuation = False
+        state.should_emit_space = True
 
     def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
         successor = getattr(op, self.name)
@@ -1281,7 +1354,7 @@ class OptionalUnitAttrVariable(OptionalAttributeVariable):
 
 
 @dataclass(frozen=True)
-class WhitespaceDirective(FormatDirective):
+class WhitespaceDirective(StaticDirective):
     """
     A whitespace directive, with the following format:
       whitespace-directive ::= `\n` | ` ` | ``
@@ -1293,8 +1366,8 @@ class WhitespaceDirective(FormatDirective):
     whitespace: Literal[" ", "\n", ""]
     """The whitespace that should be printed."""
 
-    def parse(self, parser: Parser, state: ParsingState) -> None:
-        pass
+    def parse_optional(self, parser: Parser, state: ParsingState) -> bool:
+        return False
 
     def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
         printer.print(self.whitespace)
@@ -1394,3 +1467,46 @@ class OptionalGroupDirective(FormatDirective):
                 *self.then_elements,
             ):
                 element.print(printer, state, op)
+
+
+@dataclass(frozen=True)
+class VariadicGroupDirective(VariadicLikeFormatDirective, AnchorableDirective):
+    anchor: SizableDirective
+    whitespace: tuple[WhitespaceDirective, ...]
+    directives: tuple[VariadicFormatDirective | StaticDirective, ...]
+
+    def parse_optional(self, parser: Parser, state: ParsingState) -> bool:
+        generators = tuple(x.parse_generator(parser, state) for x in self.directives)
+        try:
+            next(generators[0])
+        except StopIteration:
+            for element in self.directives:
+                if isinstance(element, VariadicFormatDirective):
+                    element.set_empty(state)
+            return False
+        for gen in generators[1:]:
+            next(gen)
+        while parser.parse_optional_punctuation(","):
+            for gen in generators:
+                next(gen)
+        for gen in generators:
+            gen.close()
+        return True
+
+    def print(self, printer: Printer, state: PrintingState, op: IRDLOperation) -> None:
+        iterations = self.anchor.num_elements(op)
+        if not iterations:
+            return
+        for i in range(iterations):
+            if i:
+                PunctuationDirective(",").print(printer, state, op)
+            for element in (*self.whitespace, *self.directives):
+                element.print_index(i, printer, state, op)
+
+    def is_present(self, op: IRDLOperation) -> bool:
+        return bool(self.anchor.num_elements(op))
+
+    def set_empty(self, state: ParsingState):
+        for directive in self.directives:
+            if isinstance(directive, VariadicFormatDirective):
+                directive.set_empty(state)
