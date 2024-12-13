@@ -1285,3 +1285,8 @@ class OptionalGroupDirective(FormatDirective):
                 *self.then_elements,
             ):
                 element.print(printer, state, op)
+
+
+@dataclass(frozen=True)
+class VariadicGroupDirective(FormatDirective):
+    whitespace_element: tuple[WhitespaceDirective, ...]
