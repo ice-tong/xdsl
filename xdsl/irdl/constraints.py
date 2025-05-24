@@ -39,6 +39,12 @@ class ConstraintContext:
     _int_variables: dict[str, int] = field(default_factory=dict[str, int])
     """The assignment of constraint int variables."""
 
+    parent: ConstraintContext | None = None
+
+    typevar_variables: dict[str, AttrConstraint] = field(
+        default_factory=dict[str, "AttrConstraint"]
+    )
+
     def get_variable(self, key: str) -> Attribute | None:
         return self._variables.get(key)
 
@@ -324,6 +330,86 @@ class VarConstraint(GenericAttrConstraint[AttributeCovT]):
 
     def get_unique_base(self) -> type[Attribute] | None:
         return self.constraint.get_unique_base()
+
+
+@dataclass(frozen=True)
+class TypeVarConstraint(GenericAttrConstraint[AttributeCovT]):
+    """
+    Constrain an attribute with the given constraint, and constrain all occurences
+    of this constraint (i.e, sharing the same name) to be equal.
+    """
+
+    name: str
+    """The variable name. All uses of that name refer to the same variable."""
+
+    constraint: GenericAttrConstraint[AttributeCovT]
+    """The constraint that the variable must satisfy."""
+
+    def verify(
+        self,
+        attr: Attribute,
+        constraint_context: ConstraintContext,
+    ) -> None:
+        # If we do not have a parent, we are verifying the top-level attribute.
+        if constraint_context.parent is None:
+            return self.constraint.verify(attr, constraint_context)
+
+        # Otherwise, we are currently verifying a nested generic attribute
+        # The underlying constraint is already verified by the attribute, so
+        # we only verify the typevar constraint as given by the generic parameter.
+        constraint = constraint_context.typevar_variables[self.name]
+        constraint.verify(attr, constraint_context.parent)
+
+    def get_variable_extractors(self) -> dict[str, VarExtractor[Attribute]]:
+        return self.constraint.get_variable_extractors()
+
+    def infer(self, context: ConstraintContext) -> AttributeCovT:
+        raise NotImplementedError()
+
+    def can_infer(self, var_constraint_names: Set[str]) -> bool:
+        return True
+
+    def get_unique_base(self) -> type[Attribute] | None:
+        return None
+
+
+ParamAttrCovT = TypeVar("ParamAttrCovT", bound=ParametrizedAttribute, covariant=True)
+
+
+@dataclass(frozen=True)
+class GenericParamAttrConstraint(GenericAttrConstraint[ParamAttrCovT]):
+    type: type[ParamAttrCovT]
+    typevars: dict[str, AttrConstraint]
+
+    def verify(
+        self,
+        attr: Attribute,
+        constraint_context: ConstraintContext,
+    ) -> None:
+        nested_constraint = ConstraintContext()
+        nested_constraint.parent = constraint_context
+        nested_constraint.typevar_variables = self.typevars
+
+        if not isinstance(attr, self.type):
+            raise VerifyException("Wrong attribute type")
+
+        attr_def = attr.get_irdl_definition()
+        for param, (_, param_constr) in zip(
+            attr.parameters, attr_def.parameters, strict=True
+        ):
+            param_constr.verify(param, nested_constraint)
+
+    def get_variable_extractors(self) -> dict[str, VarExtractor[Attribute]]:
+        return {}
+
+    def infer(self, context: ConstraintContext) -> ParamAttrCovT:
+        raise NotImplementedError()
+
+    def can_infer(self, var_constraint_names: Set[str]) -> bool:
+        return True
+
+    def get_unique_base(self) -> type[Attribute] | None:
+        return None
 
 
 @dataclass(frozen=True, init=True)

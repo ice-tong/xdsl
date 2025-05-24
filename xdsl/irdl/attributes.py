@@ -53,7 +53,8 @@ from .constraints import (  # noqa: TID251
     ConstraintVar,
     EqAttrConstraint,
     GenericAttrConstraint,
-    ParamAttrConstraint,
+    GenericParamAttrConstraint,
+    TypeVarConstraint,
     VarConstraint,
 )
 from .error import IRDLAnnotations  # noqa: TID251
@@ -402,7 +403,7 @@ def irdl_to_attr_constraint(
         if irdl.__bound__ is None:
             raise Exception("Type variables used in IRDL are expected to be bound.")
         # We do not allow nested type variables.
-        return irdl_to_attr_constraint(irdl.__bound__)
+        return TypeVarConstraint(irdl.__name__, irdl_to_attr_constraint(irdl.__bound__))
 
     origin = get_origin(irdl)
 
@@ -437,18 +438,11 @@ def irdl_to_attr_constraint(
                 f" parameters, got {len(args)}."
             )
 
-        type_var_mapping = {
-            parameter: arg for parameter, arg in zip(generic_args, args)
+        scoped_typevar_mapping = {
+            parameter.__name__: arg for parameter, arg in zip(generic_args, args)
         }
 
-        origin_parameters = irdl_param_attr_get_param_type_hints(origin)
-        origin_constraints = [
-            irdl_to_attr_constraint(
-                param, allow_type_var=True, type_var_mapping=type_var_mapping
-            )
-            for _, param in origin_parameters
-        ]
-        return ParamAttrConstraint(origin, origin_constraints)
+        return GenericParamAttrConstraint(origin, scoped_typevar_mapping)
 
     # Union case
     # This is a coercion for an `AnyOf` constraint.
