@@ -74,8 +74,8 @@ class BasePrinter:
             print_fn(elem)
 
     @contextmanager
-    def colored(self, color: Colors):
-        if self._in_color_block or not self.syntax_highlight:
+    def colored(self, color: Colors | None):
+        if self._in_color_block or not self.syntax_highlight or color is None:
             yield
         else:
             self._in_color_block = True
